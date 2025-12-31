@@ -1,0 +1,150 @@
+# =========================
+# ОС и мусор
+# =========================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+*.swp
+*.swo
+*.tmp
+*.temp
+*.bak
+*.old
+
+# =========================
+# IDE / редакторы
+# =========================
+.idea/
+*.iml
+*.ipr
+*.iws
+
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+
+.history/
+*.code-workspace
+
+# =========================
+# Python: байткод, кеши, сборка
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+nosetests.xml
+pytestdebug.log
+
+.mypy_cache/
+.pyre/
+.ruff_cache/
+.dmypy.json
+
+.ipynb_checkpoints/
+
+# build / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+wheelhouse/
+
+# виртуальные окружения
+.venv/
+venv/
+env/
+ENV/
+.ENV/
+
+# инструменты
+.tox/
+.nox/
+.cache/
+.hypothesis/
+
+# =========================
+# Логи
+# =========================
+*.log
+logs/
+log/
+
+# =========================
+# Django (если используешь)
+# =========================
+db.sqlite3
+db.sqlite3-journal
+local_settings.py
+media/
+staticfiles/
+
+# =========================
+# Node.js / фронтенд
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# Next.js / Nuxt / Vite / общие сборки
+.next/
+.nuxt/
+.output/
+dist/
+build/
+out/
+.vite/
+.cache-loader/
+coverage/
+
+# =========================
+# Переменные окружения / секреты
+# =========================
+.env
+.env.*
+*.env
+!.env.example
+
+*.pem
+*.key
+*.p12
+*.pfx
+
+# =========================
+# Docker локальные оверрайды
+# =========================
+docker-compose.override.yml
+
+# =========================
+# Базы/дампы/артефакты данных
+# =========================
+*.sqlite
+*.db
+*.dump
+*.sql
+*.tar
+*.gz
+*.zip
+
+# =========================
+# Прочее (по ситуации)
+# =========================
+*.pid
+*.pid.lock

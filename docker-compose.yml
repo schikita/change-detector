@@ -1,0 +1,15 @@
+services:
+  watch-bot:
+    build: .
+    container_name: watch-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: Europe/Minsk
+      DB_PATH: /data/watch_bot.sqlite3
+    volumes:
+      - watch_bot_data:/data
+
+volumes:
+  watch_bot_data:
