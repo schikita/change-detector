@@ -1039,17 +1039,32 @@ def build_app():
     repo = SqliteRepo(db_path)
     repo.ensure_user(superadmin_id, ROLE_SUPERADMIN)
 
-    http_request = HTTPXRequest(
-        httpx_kwargs={"verify": False}
+    http_request_bot = HTTPXRequest(
+    httpx_kwargs={"verify": False},
+    connection_pool_size=20,
+    pool_timeout=30,
+    connect_timeout=10,
+    read_timeout=30,
+    write_timeout=30,
+)
+
+    http_request_updates = HTTPXRequest(
+        httpx_kwargs={"verify": False},
+        connection_pool_size=5,
+        pool_timeout=30,
+        connect_timeout=10,
+        read_timeout=60,
+        write_timeout=30,
     )
 
     app = (
         Application.builder()
         .token(token)
-        .request(http_request)
-        .get_updates_request(http_request)
+        .request(http_request_bot)
+        .get_updates_request(http_request_updates)
         .build()
     )
+
 
     app.bot_data["repo"] = repo
     app.bot_data["superadmin_id"] = superadmin_id
