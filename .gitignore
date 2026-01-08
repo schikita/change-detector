@@ -136,6 +136,7 @@ docker-compose.override.yml
 # Базы/дампы/артефакты данных
 # =========================
 *.sqlite
+*.sqlite3
 *.db
 *.dump
 *.sql

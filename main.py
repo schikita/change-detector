@@ -6,6 +6,7 @@ import logging
 import threading
 import asyncio
 from datetime import datetime, timedelta, timezone
+import html
 
 import requests
 import urllib3
@@ -13,6 +14,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -156,8 +158,8 @@ def _extract_fallback_body(soup):
     return normalize_plain_text(text)
 
 
-def extract_news_snapshot_from_html(html, url):
-    soup = BeautifulSoup(html or "", "html.parser")
+def extract_news_snapshot_from_html(html_text, url):
+    soup = BeautifulSoup(html_text or "", "html.parser")
     _soup_drop_noise(soup)
 
     title = _extract_title(soup)
@@ -236,15 +238,15 @@ def fetch_snapshot_sync(url, user_agent, timeout_sec, verify_ssl):
         return fetch_telegram_post_snapshot_sync(url, user_agent, timeout_sec, verify_ssl)
 
     data = fetch_html_sync(url, user_agent, timeout_sec, verify_ssl)
-    html = data.get("html") or ""
+    html_text = data.get("html") or ""
     final_url = data.get("final_url") or url
     content_type = data.get("content_type") or ""
 
-    if "text/html" not in content_type and "<html" not in (html[:500].lower()):
-        text = normalize_plain_text(html)
+    if "text/html" not in content_type and "<html" not in (html_text[:500].lower()):
+        text = normalize_plain_text(html_text)
         return {"title": "", "body": text, "status": data.get("status"), "final_url": final_url}
 
-    snap = extract_news_snapshot_from_html(html, final_url)
+    snap = extract_news_snapshot_from_html(html_text, final_url)
     return {"title": snap["title"], "body": snap["body"], "status": data.get("status"), "final_url": final_url}
 
 
@@ -253,67 +255,108 @@ def build_snapshot_hash(title, body):
     return sha256_text(base)
 
 
-def _diff_summary(old_text, new_text, limit_added=6, limit_removed=6, limit_changed=4, max_line_len=180):
-    old_lines = normalize_plain_text(old_text).splitlines()
-    new_lines = normalize_plain_text(new_text).splitlines()
+def _tokenize_for_diff(text):
+    text = normalize_plain_text(text or "")
+    if not text:
+        return []
+    return re.findall(r"\s+|[^\s]+", text, flags=re.UNICODE)
+
+
+def build_diff_merged_html(old_text, new_text):
+    old_tokens = _tokenize_for_diff(old_text)
+    new_tokens = _tokenize_for_diff(new_text)
 
     import difflib
 
-    sm = difflib.SequenceMatcher(a=old_lines, b=new_lines)
-    added = []
-    removed = []
-    changed = []
+    sm = difflib.SequenceMatcher(a=old_tokens, b=new_tokens)
+    out = []
 
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == "equal":
+            for t in old_tokens[i1:i2]:
+                out.append(html.escape(t))
+            continue
+
+        if tag == "delete":
+            deleted = "".join(old_tokens[i1:i2])
+            if deleted.strip():
+                out.append("<s>{}</s>".format(html.escape(deleted)))
+            else:
+                out.append(html.escape(deleted))
             continue
 
         if tag == "insert":
-            for line in new_lines[j1:j2]:
-                if len(added) >= limit_added:
-                    break
-                ln = compact_text(line, max_line_len)
-                if ln:
-                    added.append(ln)
+            inserted = "".join(new_tokens[j1:j2])
+            if inserted.strip():
+                out.append("<b>{}</b>".format(html.escape(inserted)))
+            else:
+                out.append(html.escape(inserted))
+            continue
 
-        elif tag == "delete":
-            for line in old_lines[i1:i2]:
-                if len(removed) >= limit_removed:
-                    break
-                ln = compact_text(line, max_line_len)
-                if ln:
-                    removed.append(ln)
+        if tag == "replace":
+            deleted = "".join(old_tokens[i1:i2])
+            inserted = "".join(new_tokens[j1:j2])
 
-        elif tag == "replace":
-            olds = old_lines[i1:i2]
-            news = new_lines[j1:j2]
-            pairs = min(len(olds), len(news))
+            if deleted:
+                if deleted.strip():
+                    out.append("<s>{}</s>".format(html.escape(deleted)))
+                else:
+                    out.append(html.escape(deleted))
 
-            for k in range(pairs):
-                if len(changed) >= limit_changed:
-                    break
-                o = compact_text(olds[k], max_line_len)
-                n = compact_text(news[k], max_line_len)
-                if o or n:
-                    changed.append((o, n))
+            if inserted:
+                if inserted.strip():
+                    out.append("<b>{}</b>".format(html.escape(inserted)))
+                else:
+                    out.append(html.escape(inserted))
+            continue
 
-            if len(removed) < limit_removed:
-                for line in olds[pairs:]:
-                    if len(removed) >= limit_removed:
-                        break
-                    ln = compact_text(line, max_line_len)
-                    if ln:
-                        removed.append(ln)
+    return "".join(out).strip()
 
-            if len(added) < limit_added:
-                for line in news[pairs:]:
-                    if len(added) >= limit_added:
-                        break
-                    ln = compact_text(line, max_line_len)
-                    if ln:
-                        added.append(ln)
 
-    return {"added": added, "removed": removed, "changed": changed}
+def _split_html_message(text, limit):
+    text = (text or "").strip()
+    if not text:
+        return []
+
+    chunks = []
+    i = 0
+    n = len(text)
+
+    while i < n:
+        j = min(i + limit, n)
+        if j >= n:
+            chunks.append(text[i:n].strip())
+            break
+
+        cut = text.rfind("\n", i, j)
+        if cut <= i:
+            cut = j
+
+        chunk = text[i:cut].strip()
+        if chunk:
+            chunks.append(chunk)
+        i = cut
+
+    return chunks
+
+
+async def send_html_long(bot, chat_id, html_text, reply_markup=None, disable_preview=True):
+    chunks = _split_html_message(html_text, limit=3800)
+    if not chunks:
+        return
+
+    for idx, chunk in enumerate(chunks):
+        kb = reply_markup if idx == 0 else None
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=chunk,
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb,
+                disable_web_page_preview=disable_preview,
+            )
+        except Exception:
+            pass
 
 
 class SqliteRepo:
@@ -517,9 +560,7 @@ class SqliteRepo:
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "Отправьте ссылку на новость — бот начнёт отслеживание на 24 часа.\n"
-        "При изменениях пришлёт коротко: что удалили, что добавили, что заменили.\n\n"
-       
-        ,
+        "При изменениях пришлёт уведомление с полным текстом и подсветкой правок.",
         reply_markup=build_reply_kb(),
     )
 
@@ -605,8 +646,6 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     kind = "telegram" if "://t.me/" in txt.lower() else "web"
 
-    await update.message.reply_text("Принято. Снимаю исходный слепок...", reply_markup=ReplyKeyboardRemove())
-
     try:
         data = await asyncio.to_thread(fetch_snapshot_sync, txt, user_agent, timeout_sec, verify_ssl)
         title = normalize_plain_text(data.get("title") or "")
@@ -637,14 +676,12 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             "{h}\n"
             "ID: #{id}\n"
-            "Ссылка: {url}\n"
-            "До: {exp}\n\n"
-            "Заголовок:\n{t}".format(
+            "{url}\n"
+            "До: {exp}".format(
                 h=header,
                 id=wid,
                 url=final_url,
                 exp=dt_to_str(expires_at),
-                t=compact_text(title, 220) if title else "(без заголовка)",
             )
         )
 
@@ -676,14 +713,6 @@ async def check_one_watch(app, w, sem):
     now = utcnow()
     if now >= expires_at:
         repo.expire_watch(wid)
-        try:
-            await app.bot.send_message(
-                chat_id=owner_id,
-                text="Срок 24 часа истёк, отслеживание отключено: #{id}\n{url}".format(id=wid, url=url),
-                reply_markup=build_reply_kb(),
-            )
-        except Exception:
-            pass
         return
 
     async with sem:
@@ -699,57 +728,19 @@ async def check_one_watch(app, w, sem):
             new_hash = build_snapshot_hash(title, body)
 
             if last_hash and new_hash != last_hash:
-                parts = []
-                parts.append("Изменения обнаружены.")
-                parts.append("ID: #{id}".format(id=wid))
-                parts.append("Ссылка: {url}".format(url=url))
-                parts.append("Время: {t}".format(t=dt_to_str(utcnow())))
+                shown_title = title.strip() or last_title.strip() or "Изменения"
+                diff_body_html = build_diff_merged_html(last_body, body)
 
-                title_changed = normalize_plain_text(title) != normalize_plain_text(last_title)
-                body_changed = normalize_plain_text(body) != normalize_plain_text(last_body)
+                header_html = "<b>{}</b>\n{}\n\n".format(html.escape(shown_title), html.escape(url))
+                message_html = (header_html + (diff_body_html or "")).strip()
 
-                if title_changed:
-                    parts.append("")
-                    parts.append("Заголовок:")
-                    parts.append("- " + compact_text(last_title, 220) if last_title else "- (не было)")
-                    parts.append("+ " + compact_text(title, 220) if title else "+ (стал пустым)")
-
-                if body_changed:
-                    d = _diff_summary(last_body, body)
-                    added = d["added"]
-                    removed = d["removed"]
-                    changed = d["changed"]
-
-                    if removed:
-                        parts.append("")
-                        parts.append("Удалили:")
-                        for x in removed:
-                            parts.append("- " + x)
-
-                    if added:
-                        parts.append("")
-                        parts.append("Добавили:")
-                        for x in added:
-                            parts.append("+ " + x)
-
-                    if changed:
-                        parts.append("")
-                        parts.append("Заменили:")
-                        for o, n in changed:
-                            parts.append("- " + o)
-                            parts.append("+ " + n)
-
-                    if not removed and not added and not changed:
-                        parts.append("")
-                        parts.append("Текст изменился, но краткая сводка не смогла выделить строки (возможна перестановка).")
-
-                msg = "\n".join(parts).strip()
-                msg = compact_text(msg, 3900)
-
-                try:
-                    await app.bot.send_message(chat_id=owner_id, text=msg, reply_markup=build_reply_kb())
-                except Exception:
-                    pass
+                await send_html_long(
+                    bot=app.bot,
+                    chat_id=owner_id,
+                    html_text=message_html,
+                    reply_markup=build_reply_kb(),
+                    disable_preview=True,
+                )
 
             repo.touch_watch_ok(wid, new_hash, title, body, status)
 
