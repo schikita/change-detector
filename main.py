@@ -313,31 +313,137 @@ def build_diff_merged_html(old_text, new_text):
     return "".join(out).strip()
 
 
-def _split_html_message(text, limit):
-    text = (text or "").strip()
-    if not text:
+def _safe_entity_cut(text, max_len):
+    if max_len <= 0:
+        return 0
+    if max_len >= len(text):
+        return len(text)
+
+    chunk = text[:max_len]
+
+    last_amp = chunk.rfind("&")
+    last_semi = chunk.rfind(";")
+
+    # Если в конце чанка остался "хвост" незакрытой HTML-сущности (&...),
+    # режем до последнего '&', чтобы не ломать ParseMode.HTML.
+    if last_amp != -1 and (last_semi == -1 or last_semi < last_amp):
+        if last_amp == 0:
+            return max_len  # совсем плохой случай, но не залипаем
+        return last_amp
+
+    return max_len
+
+
+def _split_html_message(html_text, limit):
+    html_text = (html_text or "").strip()
+    if not html_text:
         return []
 
+    # Мы используем только <b>, </b>, <s>, </s>
+    tag_re = re.compile(r"(</?b>|</?s>)", flags=re.IGNORECASE)
+    parts = tag_re.split(html_text)
+
     chunks = []
-    i = 0
-    n = len(text)
+    buf = []
+    buf_len = 0
+    open_tags = []
 
-    while i < n:
-        j = min(i + limit, n)
-        if j >= n:
-            chunks.append(text[i:n].strip())
-            break
+    def close_tags():
+        closing = []
+        for t in reversed(open_tags):
+            if t == "b":
+                closing.append("</b>")
+            elif t == "s":
+                closing.append("</s>")
+        return "".join(closing)
 
-        cut = text.rfind("\n", i, j)
-        if cut <= i:
-            cut = j
+    def open_tags_prefix():
+        opening = []
+        for t in open_tags:
+            if t == "b":
+                opening.append("<b>")
+            elif t == "s":
+                opening.append("<s>")
+        return "".join(opening)
 
-        chunk = text[i:cut].strip()
+    def flush():
+        nonlocal buf, buf_len
+        if not buf:
+            return
+        chunk = "".join(buf) + close_tags()
+        chunk = chunk.strip()
         if chunk:
             chunks.append(chunk)
-        i = cut
+        buf = []
+        buf_len = 0
+        prefix = open_tags_prefix()
+        if prefix:
+            buf.append(prefix)
+            buf_len = len(prefix)
+
+    def push_piece(piece):
+        nonlocal buf_len
+
+        if not piece:
+            return
+
+        while piece:
+            space = limit - buf_len
+            if space <= 0:
+                flush()
+                space = limit - buf_len
+                if space <= 0:
+                    # если prefix сам по себе съел лимит (теоретически)
+                    break
+
+            if len(piece) <= space:
+                buf.append(piece)
+                buf_len += len(piece)
+                return
+
+            cut = _safe_entity_cut(piece, space)
+            if cut <= 0:
+                flush()
+                continue
+
+            buf.append(piece[:cut])
+            buf_len += cut
+            piece = piece[cut:]
+            flush()
+
+    for p in parts:
+        if not p:
+            continue
+
+        low = p.lower()
+
+        if low in ("<b>", "<s>"):
+            tag = "b" if low == "<b>" else "s"
+            open_tags.append(tag)
+            push_piece(low)
+            continue
+
+        if low in ("</b>", "</s>"):
+            tag = "b" if low == "</b>" else "s"
+            # корректно снимаем последний такой тег, даже если вложенность поехала
+            for i in range(len(open_tags) - 1, -1, -1):
+                if open_tags[i] == tag:
+                    open_tags.pop(i)
+                    break
+            push_piece(low)
+            continue
+
+        # обычный текст
+        push_piece(p)
+
+    if buf:
+        chunk = "".join(buf) + close_tags()
+        chunk = chunk.strip()
+        if chunk:
+            chunks.append(chunk)
 
     return chunks
+
 
 
 async def send_html_long(bot, chat_id, html_text, reply_markup=None, disable_preview=True):
@@ -345,25 +451,15 @@ async def send_html_long(bot, chat_id, html_text, reply_markup=None, disable_pre
     if not chunks:
         return
 
-    last_exc = None
-
     for idx, chunk in enumerate(chunks):
         kb = reply_markup if idx == 0 else None
-        try:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=chunk,
-                parse_mode=ParseMode.HTML,
-                reply_markup=kb,
-                disable_web_page_preview=disable_preview,
-            )
-        except Exception as e:
-            last_exc = e
-            logger.exception("send_message failed (chat_id=%s, chunk=%s/%s)", chat_id, idx + 1, len(chunks))
-            break
-
-    if last_exc:
-        raise last_exc
+        await bot.send_message(
+            chat_id=chat_id,
+            text=chunk,
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb,
+            disable_web_page_preview=disable_preview,
+        )
 
 
 
