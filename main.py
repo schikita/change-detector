@@ -672,6 +672,9 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             final_url=final_url,
         )
 
+# Ничего не отправляем пользователю
+
+
         header = "Обновил отслеживание на 24 часа." if refreshed else "Отслеживание добавлено на 24 часа."
         msg = (
             "{h}\n"
