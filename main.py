@@ -13,7 +13,7 @@ import urllib3
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -328,7 +328,7 @@ def _safe_entity_cut(text, max_len):
     # режем до последнего '&', чтобы не ломать ParseMode.HTML.
     if last_amp != -1 and (last_semi == -1 or last_semi < last_amp):
         if last_amp == 0:
-            return max_len  # совсем плохой случай, но не залипаем
+            return max_len
         return last_amp
 
     return max_len
@@ -393,7 +393,6 @@ def _split_html_message(html_text, limit):
                 flush()
                 space = limit - buf_len
                 if space <= 0:
-                    # если prefix сам по себе съел лимит (теоретически)
                     break
 
             if len(piece) <= space:
@@ -425,7 +424,6 @@ def _split_html_message(html_text, limit):
 
         if low in ("</b>", "</s>"):
             tag = "b" if low == "</b>" else "s"
-            # корректно снимаем последний такой тег, даже если вложенность поехала
             for i in range(len(open_tags) - 1, -1, -1):
                 if open_tags[i] == tag:
                     open_tags.pop(i)
@@ -433,7 +431,6 @@ def _split_html_message(html_text, limit):
             push_piece(low)
             continue
 
-        # обычный текст
         push_piece(p)
 
     if buf:
@@ -443,7 +440,6 @@ def _split_html_message(html_text, limit):
             chunks.append(chunk)
 
     return chunks
-
 
 
 async def send_html_long(bot, chat_id, html_text, reply_markup=None, disable_preview=True):
@@ -460,7 +456,6 @@ async def send_html_long(bot, chat_id, html_text, reply_markup=None, disable_pre
             reply_markup=kb,
             disable_web_page_preview=disable_preview,
         )
-
 
 
 class SqliteRepo:
@@ -764,7 +759,7 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         expires_at = utcnow() + timedelta(hours=24)
 
         repo = context.application.bot_data["repo"]
-        wid, refreshed = repo.add_or_refresh_watch(
+        repo.add_or_refresh_watch(
             owner_id=update.effective_user.id,
             url=txt,
             kind=kind,
@@ -776,10 +771,7 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             final_url=final_url,
         )
 
-# Ничего не отправляем пользователю
-
-
-       
+        # Ничего не отправляем пользователю.
 
     except Exception as e:
         logger.exception("snapshot failed")
