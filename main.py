@@ -345,6 +345,8 @@ async def send_html_long(bot, chat_id, html_text, reply_markup=None, disable_pre
     if not chunks:
         return
 
+    last_exc = None
+
     for idx, chunk in enumerate(chunks):
         kb = reply_markup if idx == 0 else None
         try:
@@ -355,8 +357,14 @@ async def send_html_long(bot, chat_id, html_text, reply_markup=None, disable_pre
                 reply_markup=kb,
                 disable_web_page_preview=disable_preview,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            last_exc = e
+            logger.exception("send_message failed (chat_id=%s, chunk=%s/%s)", chat_id, idx + 1, len(chunks))
+            break
+
+    if last_exc:
+        raise last_exc
+
 
 
 class SqliteRepo:
