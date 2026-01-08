@@ -675,20 +675,7 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Ничего не отправляем пользователю
 
 
-        header = "Обновил отслеживание на 24 часа." if refreshed else "Отслеживание добавлено на 24 часа."
-        msg = (
-            "{h}\n"
-            "ID: #{id}\n"
-            "{url}\n"
-            "До: {exp}".format(
-                h=header,
-                id=wid,
-                url=final_url,
-                exp=dt_to_str(expires_at),
-            )
-        )
-
-        await update.message.reply_text(msg, reply_markup=build_reply_kb())
+       
 
     except Exception as e:
         logger.exception("snapshot failed")
