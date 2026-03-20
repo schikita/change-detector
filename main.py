@@ -7,6 +7,7 @@ import threading
 import asyncio
 from datetime import datetime, timedelta, timezone
 import html
+from io import BytesIO
 
 import requests
 import urllib3
@@ -458,6 +459,64 @@ async def send_html_long(bot, chat_id, html_text, reply_markup=None, disable_pre
         )
 
 
+def build_diff_html_page(shown_title, url, diff_body_html):
+    # diff_body_html already contains <b>...</b> / <s>...</s> with escaped content,
+    # so we embed it as-is into the full HTML document.
+    safe_title = html.escape(shown_title or "")
+    safe_url = html.escape(url or "")
+    diff_html = (diff_body_html or "").strip()
+
+    return f"""<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{safe_title}</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 16px; }}
+    .header {{ margin-bottom: 12px; }}
+    .title {{ font-size: 18px; font-weight: 700; margin-bottom: 6px; }}
+    .url a {{ color: #0645ad; text-decoration: none; word-break: break-all; }}
+    .diff {{
+      white-space: pre-wrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 13px;
+      line-height: 1.35;
+      border: 1px solid #eee;
+      padding: 12px;
+      border-radius: 8px;
+    }}
+    b {{
+      background: #fff3cd;
+      color: #856404;
+      padding: 0 2px;
+      border-radius: 3px;
+    }}
+    s {{
+      background: #f8d7da;
+      color: #721c24;
+      padding: 0 2px;
+      border-radius: 3px;
+      text-decoration: line-through;
+    }}
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="title"><b>{safe_title}</b></div>
+    <div class="url"><a href="{safe_url}" target="_blank" rel="noopener noreferrer">{safe_url}</a></div>
+  </div>
+  <div class="diff">{diff_html}</div>
+</body>
+</html>"""
+
+
+def build_diff_filename(wid, dt):
+    # Telegram хранит filename как есть, так что убираем небезопасные символы.
+    ts = (dt or utcnow()).astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return "diff_{}_{}.html".format(wid, ts)
+
+
 class SqliteRepo:
     def __init__(self, path):
         self.path = path
@@ -817,15 +876,20 @@ async def check_one_watch(app, w, sem):
                 shown_title = title.strip() or last_title.strip() or "Изменения"
                 diff_body_html = build_diff_merged_html(last_body, body)
 
-                header_html = "<b>{}</b>\n{}\n\n".format(html.escape(shown_title), html.escape(url))
-                message_html = (header_html + (diff_body_html or "")).strip()
+                html_doc = build_diff_html_page(
+                    shown_title=shown_title,
+                    url=url,
+                    diff_body_html=diff_body_html,
+                )
 
-                await send_html_long(
-                    bot=app.bot,
+                filename = build_diff_filename(wid=wid, dt=now)
+                caption = "Внесены изменения в новость: {}".format(shown_title)
+                await app.bot.send_document(
                     chat_id=owner_id,
-                    html_text=message_html,
+                    document=BytesIO(html_doc.encode("utf-8")),
+                    filename=filename,
+                    caption=caption,
                     reply_markup=build_reply_kb(),
-                    disable_preview=True,
                 )
 
             repo.touch_watch_ok(wid, new_hash, title, body, status)
