@@ -1,13 +1,23 @@
 services:
+  opera-proxy:
+    image: yarmak/opera-proxy
+    container_name: opera-proxy
+    restart: unless-stopped
+    command: ["-country", "EU", "-bind-address", "0.0.0.0:18080"]
+
   watch-bot:
     build: .
     container_name: watch-bot
     restart: unless-stopped
+    depends_on:
+      - opera-proxy
     env_file:
       - .env
     environment:
       TZ: Europe/Minsk
       DB_PATH: /data/watch_bot.sqlite3
+      HTTP_PROXY: http://opera-proxy:18080
+      HTTPS_PROXY: http://opera-proxy:18080
     volumes:
       - watch_bot_data:/data
 

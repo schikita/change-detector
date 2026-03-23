@@ -189,7 +189,7 @@ def parse_telegram_public_post(url):
     return {"public_url": public_url}
 
 
-def fetch_html_sync(url, user_agent, timeout_sec, verify_ssl):
+def fetch_html_sync(url, user_agent, timeout_sec, verify_ssl, proxy_url=None):
     headers = {
         "User-Agent": user_agent,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -198,12 +198,15 @@ def fetch_html_sync(url, user_agent, timeout_sec, verify_ssl):
         "Pragma": "no-cache",
     }
 
+    proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+
     r = requests.get(
         url,
         headers=headers,
         timeout=timeout_sec,
         allow_redirects=True,
         verify=verify_ssl,
+        proxies=proxies,
     )
 
     return {
@@ -214,13 +217,14 @@ def fetch_html_sync(url, user_agent, timeout_sec, verify_ssl):
     }
 
 
-def fetch_telegram_post_snapshot_sync(tg_url, user_agent, timeout_sec, verify_ssl):
+def fetch_telegram_post_snapshot_sync(tg_url, user_agent, timeout_sec, verify_ssl, proxy_url=None):
     info = parse_telegram_public_post(tg_url)
     if not info:
         raise ValueError("Ссылка Telegram не поддерживается (нужна публичная: https://t.me/<channel>/<id>).")
 
     headers = {"User-Agent": user_agent}
-    r = requests.get(info["public_url"], headers=headers, timeout=timeout_sec, allow_redirects=True, verify=verify_ssl)
+    proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+    r = requests.get(info["public_url"], headers=headers, timeout=timeout_sec, allow_redirects=True, verify=verify_ssl, proxies=proxies)
 
     soup = BeautifulSoup(r.text or "", "html.parser")
     _soup_drop_noise(soup)
@@ -234,11 +238,11 @@ def fetch_telegram_post_snapshot_sync(tg_url, user_agent, timeout_sec, verify_ss
     return {"title": "", "body": text, "status": r.status_code, "final_url": r.url}
 
 
-def fetch_snapshot_sync(url, user_agent, timeout_sec, verify_ssl):
+def fetch_snapshot_sync(url, user_agent, timeout_sec, verify_ssl, proxy_url=None):
     if "://t.me/" in (url or "").lower():
-        return fetch_telegram_post_snapshot_sync(url, user_agent, timeout_sec, verify_ssl)
+        return fetch_telegram_post_snapshot_sync(url, user_agent, timeout_sec, verify_ssl, proxy_url=proxy_url)
 
-    data = fetch_html_sync(url, user_agent, timeout_sec, verify_ssl)
+    data = fetch_html_sync(url, user_agent, timeout_sec, verify_ssl, proxy_url=proxy_url)
     html_text = data.get("html") or ""
     final_url = data.get("final_url") or url
     content_type = data.get("content_type") or ""
@@ -803,11 +807,12 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_agent = context.application.bot_data["user_agent"]
     timeout_sec = context.application.bot_data["timeout_sec"]
     verify_ssl = context.application.bot_data["verify_ssl"]
+    proxy_url = context.application.bot_data["proxy_url"]
 
     kind = "telegram" if "://t.me/" in txt.lower() else "web"
 
     try:
-        data = await asyncio.to_thread(fetch_snapshot_sync, txt, user_agent, timeout_sec, verify_ssl)
+        data = await asyncio.to_thread(fetch_snapshot_sync, txt, user_agent, timeout_sec, verify_ssl, proxy_url)
         title = normalize_plain_text(data.get("title") or "")
         body = normalize_plain_text(data.get("body") or "")
         status = data.get("status")
@@ -852,6 +857,7 @@ async def check_one_watch(app, w, sem):
     user_agent = app.bot_data["user_agent"]
     timeout_sec = app.bot_data["timeout_sec"]
     verify_ssl = app.bot_data["verify_ssl"]
+    proxy_url = app.bot_data["proxy_url"]
 
     wid = w["id"]
     owner_id = w["owner_id"]
@@ -869,7 +875,7 @@ async def check_one_watch(app, w, sem):
 
     async with sem:
         try:
-            data = await asyncio.to_thread(fetch_snapshot_sync, url, user_agent, timeout_sec, verify_ssl)
+            data = await asyncio.to_thread(fetch_snapshot_sync, url, user_agent, timeout_sec, verify_ssl, proxy_url)
             title = normalize_plain_text(data.get("title") or "")
             body = normalize_plain_text(data.get("body") or "")
             status = data.get("status")
@@ -938,6 +944,8 @@ def build_app():
         "Mozilla/5.0 (compatible; WatchBot/1.0; +https://example.local/bot)",
     )
 
+    proxy_url = read_env_str("PROXY_URL", "")
+
     repo = SqliteRepo(db_path)
 
     telegram_verify_ssl = read_env_bool("TELEGRAM_VERIFY_SSL", True)
@@ -987,6 +995,7 @@ def build_app():
     app.bot_data["user_agent"] = user_agent
     app.bot_data["max_concurrency"] = max_concurrency
     app.bot_data["verify_ssl"] = verify_ssl
+    app.bot_data["proxy_url"] = proxy_url or None
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("my", cmd_my))
