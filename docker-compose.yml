@@ -1,6 +1,6 @@
 services:
   opera-proxy:
-    image: yarmak/opera-proxy
+    build: https://github.com/Snawoot/opera-proxy.git
     container_name: opera-proxy
     restart: unless-stopped
     command: ["-country", "EU", "-bind-address", "0.0.0.0:18080"]
