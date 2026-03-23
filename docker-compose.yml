@@ -1,6 +1,6 @@
 services:
   opera-proxy:
-    build: https://github.com/Snawoot/opera-proxy.git
+    build: ./opera-proxy
     container_name: opera-proxy
     restart: unless-stopped
     command: ["-country", "EU", "-bind-address", "0.0.0.0:18080"]
