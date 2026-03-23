@@ -620,6 +620,7 @@ class SqliteRepo:
             return cur.lastrowid, False
 
     def list_watches_by_owner(self, owner_id):
+        cutoff = dt_to_str(utcnow() - timedelta(hours=24))
         with self._lock:
             cur = self._con.cursor()
             cur.execute(
@@ -627,9 +628,10 @@ class SqliteRepo:
                 SELECT id, url, kind, created_at, expires_at, last_checked_at, last_status, last_error, is_active
                 FROM watches
                 WHERE owner_id = ?
+                  AND (is_active = 1 OR expires_at > ?)
                 ORDER BY is_active DESC, id DESC
                 """,
-                (owner_id,),
+                (owner_id, cutoff),
             )
             return [dict(x) for x in cur.fetchall()]
 
@@ -818,7 +820,7 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         expires_at = utcnow() + timedelta(hours=24)
 
         repo = context.application.bot_data["repo"]
-        repo.add_or_refresh_watch(
+        _, refreshed = repo.add_or_refresh_watch(
             owner_id=update.effective_user.id,
             url=txt,
             kind=kind,
@@ -830,7 +832,12 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             final_url=final_url,
         )
 
-        # Ничего не отправляем пользователю.
+        shown = title.strip() or final_url
+        if refreshed:
+            confirm = "Отслеживание обновлено: {title}\nПришлю уведомление при изменениях (ещё 24 часа).".format(title=shown)
+        else:
+            confirm = "Отслеживание добавлено: {title}\nПришлю уведомление при изменениях в течение 24 часов.".format(title=shown)
+        await update.message.reply_text(confirm, reply_markup=build_reply_kb())
 
     except Exception as e:
         logger.exception("snapshot failed")
