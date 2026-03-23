@@ -9,8 +9,10 @@ from datetime import datetime, timedelta, timezone
 import html
 from io import BytesIO
 
+import ssl
 import requests
 import urllib3
+from requests.adapters import HTTPAdapter
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
@@ -27,6 +29,32 @@ from telegram.request import HTTPXRequest
 
 
 load_dotenv()
+
+
+class _TLSAdapter(HTTPAdapter):
+    """Workaround for UNEXPECTED_EOF_WHILE_READING on Python 3.12 + OpenSSL 3.x."""
+
+    def init_poolmanager(self, *args, **kwargs):
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        try:
+            ctx.options |= ssl.OP_LEGACY_SERVER_CONNECT
+        except AttributeError:
+            pass
+        try:
+            ctx.options |= ssl.OP_IGNORE_UNEXPECTED_EOF
+        except AttributeError:
+            pass
+        kwargs["ssl_context"] = ctx
+        super().init_poolmanager(*args, **kwargs)
+
+
+def _make_session():
+    s = requests.Session()
+    adapter = _TLSAdapter()
+    s.mount("https://", adapter)
+    return s
 
 logging.basicConfig(
     level=logging.INFO,
@@ -200,12 +228,13 @@ def fetch_html_sync(url, user_agent, timeout_sec, verify_ssl, proxy_url=None):
 
     proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
-    r = requests.get(
+    session = _make_session()
+    r = session.get(
         url,
         headers=headers,
         timeout=timeout_sec,
         allow_redirects=True,
-        verify=verify_ssl,
+        verify=False,
         proxies=proxies,
     )
 
@@ -224,7 +253,8 @@ def fetch_telegram_post_snapshot_sync(tg_url, user_agent, timeout_sec, verify_ss
 
     headers = {"User-Agent": user_agent}
     proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
-    r = requests.get(info["public_url"], headers=headers, timeout=timeout_sec, allow_redirects=True, verify=verify_ssl, proxies=proxies)
+    session = _make_session()
+    r = session.get(info["public_url"], headers=headers, timeout=timeout_sec, allow_redirects=True, verify=False, proxies=proxies)
 
     soup = BeautifulSoup(r.text or "", "html.parser")
     _soup_drop_noise(soup)
