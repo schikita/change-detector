@@ -325,55 +325,101 @@ def _tokenize_for_diff(text):
     return re.findall(r"\s+|[^\s]+", text, flags=re.UNICODE)
 
 
-def build_diff_merged_html(old_text, new_text):
+def build_diff_changes_only_html(old_text, new_text, context_words=10):
+    """Returns HTML with ONLY changed fragments + small surrounding context.
+    Deletions are wrapped in <s>, insertions in <b>.
+    Change blocks are separated by <hr class="sep"/>.
+    """
+    import difflib
+
     old_tokens = _tokenize_for_diff(old_text)
     new_tokens = _tokenize_for_diff(new_text)
 
-    import difflib
+    sm = difflib.SequenceMatcher(a=old_tokens, b=new_tokens, autojunk=False)
+    opcodes = list(sm.get_opcodes())
 
-    sm = difflib.SequenceMatcher(a=old_tokens, b=new_tokens)
-    out = []
+    def last_n_words(tokens, n):
+        result, count = [], 0
+        for t in reversed(tokens):
+            result.insert(0, t)
+            if t.strip():
+                count += 1
+                if count >= n:
+                    break
+        return result
 
-    for tag, i1, i2, j1, j2 in sm.get_opcodes():
-        if tag == "equal":
-            for t in old_tokens[i1:i2]:
-                out.append(html.escape(t))
-            continue
+    def first_n_words(tokens, n):
+        result, count = [], 0
+        for t in tokens:
+            result.append(t)
+            if t.strip():
+                count += 1
+                if count >= n:
+                    break
+        return result
 
-        if tag == "delete":
-            deleted = "".join(old_tokens[i1:i2])
-            if deleted.strip():
-                out.append("<s>{}</s>".format(html.escape(deleted)))
-            else:
-                out.append(html.escape(deleted))
-            continue
+    change_indices = [i for i, op in enumerate(opcodes) if op[0] != "equal"]
+    if not change_indices:
+        return ""
 
-        if tag == "insert":
-            inserted = "".join(new_tokens[j1:j2])
-            if inserted.strip():
-                out.append("<b>{}</b>".format(html.escape(inserted)))
-            else:
-                out.append(html.escape(inserted))
-            continue
+    # Group into blocks; merge if separated by ≤3 equal tokens
+    blocks = []
+    start = prev = change_indices[0]
+    for ci in change_indices[1:]:
+        gap = ci - prev - 1
+        if gap == 0:
+            prev = ci
+        elif gap == 1 and (opcodes[prev + 1][2] - opcodes[prev + 1][1]) <= 3:
+            prev = ci
+        else:
+            blocks.append((start, prev))
+            start = prev = ci
+    blocks.append((start, prev))
 
-        if tag == "replace":
-            deleted = "".join(old_tokens[i1:i2])
-            inserted = "".join(new_tokens[j1:j2])
+    parts = []
 
-            if deleted:
+    for block_num, (first_idx, last_idx) in enumerate(blocks):
+        if block_num > 0:
+            parts.append('\n<hr class="sep"/>\n')
+
+        first_op = opcodes[first_idx]
+        last_op = opcodes[last_idx]
+
+        # Context before the block
+        pre_all = old_tokens[: first_op[1]]
+        pre_ctx = last_n_words(pre_all, context_words)
+        if len(pre_ctx) < len(pre_all):
+            parts.append('<span class="ctx">…</span> ')
+        if pre_ctx:
+            parts.append(html.escape("".join(pre_ctx)))
+
+        # The change block itself
+        for tag, i1, i2, j1, j2 in opcodes[first_idx : last_idx + 1]:
+            if tag == "equal":
+                parts.append(html.escape("".join(old_tokens[i1:i2])))
+                continue
+            if tag in ("delete", "replace"):
+                deleted = "".join(old_tokens[i1:i2])
                 if deleted.strip():
-                    out.append("<s>{}</s>".format(html.escape(deleted)))
-                else:
-                    out.append(html.escape(deleted))
-
-            if inserted:
+                    parts.append("<s>{}</s>".format(html.escape(deleted)))
+                elif deleted:
+                    parts.append(html.escape(deleted))
+            if tag in ("insert", "replace"):
+                inserted = "".join(new_tokens[j1:j2])
                 if inserted.strip():
-                    out.append("<b>{}</b>".format(html.escape(inserted)))
-                else:
-                    out.append(html.escape(inserted))
-            continue
+                    parts.append("<b>{}</b>".format(html.escape(inserted)))
+                elif inserted:
+                    parts.append(html.escape(inserted))
 
-    return "".join(out).strip()
+        # Context after the block
+        post_all = old_tokens[last_op[2] :]
+        post_ctx = first_n_words(post_all, context_words)
+        if post_ctx:
+            parts.append(html.escape("".join(post_ctx)))
+        if len(post_ctx) < len(post_all):
+            parts.append(' <span class="ctx">…</span>')
+
+    return "".join(parts).strip()
 
 
 def _safe_entity_cut(text, max_len):
@@ -535,40 +581,24 @@ def build_diff_html_page(shown_title, url, diff_body_html):
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{safe_title}</title>
   <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 16px; }}
-    .header {{ margin-bottom: 12px; }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 16px; font-size: 15px; line-height: 1.6; color: #222; }}
+    .header {{ margin-bottom: 16px; border-bottom: 1px solid #ddd; padding-bottom: 10px; }}
     .title {{ font-size: 18px; font-weight: 700; margin-bottom: 6px; }}
-    .url a {{ color: #0645ad; text-decoration: none; word-break: break-all; }}
-    .diff {{
-      white-space: pre-wrap;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-      font-size: 13px;
-      line-height: 1.35;
-      border: 1px solid #eee;
-      padding: 12px;
-      border-radius: 8px;
-    }}
-    b {{
-      background: #fff3cd;
-      color: #856404;
-      padding: 0 2px;
-      border-radius: 3px;
-    }}
-    s {{
-      background: #f8d7da;
-      color: #721c24;
-      padding: 0 2px;
-      border-radius: 3px;
-      text-decoration: line-through;
-    }}
+    .url a {{ color: #0645ad; text-decoration: none; word-break: break-all; font-size: 13px; }}
+    .diff {{ white-space: pre-wrap; }}
+    .block {{ background: #fafafa; border: 1px solid #e8e8e8; border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }}
+    b {{ background: #d4edda; color: #155724; padding: 1px 3px; border-radius: 3px; font-weight: 600; }}
+    s {{ background: #f8d7da; color: #721c24; padding: 1px 3px; border-radius: 3px; text-decoration: line-through; }}
+    hr.sep {{ border: none; border-top: 1px dashed #ccc; margin: 10px 0; }}
+    .ctx {{ color: #999; font-style: normal; }}
   </style>
 </head>
 <body>
   <div class="header">
-    <div class="title"><b>{safe_title}</b></div>
+    <div class="title">{safe_title}</div>
     <div class="url"><a href="{safe_url}" target="_blank" rel="noopener noreferrer">{safe_url}</a></div>
   </div>
-  <div class="diff">{diff_html}</div>
+  <div class="diff block">{diff_html}</div>
 </body>
 </html>"""
 
@@ -951,7 +981,7 @@ async def check_one_watch(app, w, sem):
 
             if last_hash and new_hash != last_hash:
                 shown_title = title.strip() or last_title.strip() or "Изменения"
-                diff_body_html = build_diff_merged_html(last_body, body)
+                diff_body_html = build_diff_changes_only_html(last_body, body)
 
                 html_doc = build_diff_html_page(
                     shown_title=shown_title,
