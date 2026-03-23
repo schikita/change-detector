@@ -10,6 +10,8 @@ import html
 from io import BytesIO
 
 import ssl
+import random
+import urllib.parse
 import requests
 import urllib3
 from requests.adapters import HTTPAdapter
@@ -217,13 +219,39 @@ def parse_telegram_public_post(url):
     return {"public_url": public_url}
 
 
-def fetch_html_sync(url, user_agent, timeout_sec, verify_ssl, proxy_url=None):
+def fetch_html_sync(url, user_agent, timeout_sec, verify_ssl, proxy_url=None, cf_worker_url=None, cf_worker_key=None):
+    # Если настроен Cloudflare Worker — используем его как fetcher
+    if cf_worker_url:
+        params = {"url": url}
+        if cf_worker_key:
+            params["key"] = cf_worker_key
+        worker_request_url = cf_worker_url + "?" + urllib.parse.urlencode(params)
+        session = _make_session()
+        r = session.get(worker_request_url, timeout=timeout_sec, verify=False)
+        final_url = r.headers.get("X-Final-Url") or url
+        return {
+            "html": r.text or "",
+            "status": int(r.headers.get("X-Status") or r.status_code),
+            "final_url": final_url,
+            "content_type": (r.headers.get("Content-Type") or "").lower(),
+        }
+
     headers = {
         "User-Agent": user_agent,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "ru,en;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "sec-ch-ua": '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "DNT": "1",
     }
 
     proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
@@ -268,11 +296,11 @@ def fetch_telegram_post_snapshot_sync(tg_url, user_agent, timeout_sec, verify_ss
     return {"title": "", "body": text, "status": r.status_code, "final_url": r.url}
 
 
-def fetch_snapshot_sync(url, user_agent, timeout_sec, verify_ssl, proxy_url=None):
+def fetch_snapshot_sync(url, user_agent, timeout_sec, verify_ssl, proxy_url=None, cf_worker_url=None, cf_worker_key=None):
     if "://t.me/" in (url or "").lower():
         return fetch_telegram_post_snapshot_sync(url, user_agent, timeout_sec, verify_ssl, proxy_url=proxy_url)
 
-    data = fetch_html_sync(url, user_agent, timeout_sec, verify_ssl, proxy_url=proxy_url)
+    data = fetch_html_sync(url, user_agent, timeout_sec, verify_ssl, proxy_url=proxy_url, cf_worker_url=cf_worker_url, cf_worker_key=cf_worker_key)
     html_text = data.get("html") or ""
     final_url = data.get("final_url") or url
     content_type = data.get("content_type") or ""
@@ -838,11 +866,13 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     timeout_sec = context.application.bot_data["timeout_sec"]
     verify_ssl = context.application.bot_data["verify_ssl"]
     proxy_url = context.application.bot_data["proxy_url"]
+    cf_worker_url = context.application.bot_data["cf_worker_url"]
+    cf_worker_key = context.application.bot_data["cf_worker_key"]
 
     kind = "telegram" if "://t.me/" in txt.lower() else "web"
 
     try:
-        data = await asyncio.to_thread(fetch_snapshot_sync, txt, user_agent, timeout_sec, verify_ssl, proxy_url)
+        data = await asyncio.to_thread(fetch_snapshot_sync, txt, user_agent, timeout_sec, verify_ssl, proxy_url, cf_worker_url, cf_worker_key)
         title = normalize_plain_text(data.get("title") or "")
         body = normalize_plain_text(data.get("body") or "")
         status = data.get("status")
@@ -888,6 +918,8 @@ async def check_one_watch(app, w, sem):
     timeout_sec = app.bot_data["timeout_sec"]
     verify_ssl = app.bot_data["verify_ssl"]
     proxy_url = app.bot_data["proxy_url"]
+    cf_worker_url = app.bot_data["cf_worker_url"]
+    cf_worker_key = app.bot_data["cf_worker_key"]
 
     wid = w["id"]
     owner_id = w["owner_id"]
@@ -904,8 +936,10 @@ async def check_one_watch(app, w, sem):
         return
 
     async with sem:
+        # случайная задержка 1-4 сек — имитирует живого пользователя, снижает риск блокировки
+        await asyncio.sleep(random.uniform(1.0, 4.0))
         try:
-            data = await asyncio.to_thread(fetch_snapshot_sync, url, user_agent, timeout_sec, verify_ssl, proxy_url)
+            data = await asyncio.to_thread(fetch_snapshot_sync, url, user_agent, timeout_sec, verify_ssl, proxy_url, cf_worker_url, cf_worker_key)
             title = normalize_plain_text(data.get("title") or "")
             body = normalize_plain_text(data.get("body") or "")
             status = data.get("status")
@@ -942,7 +976,17 @@ async def check_one_watch(app, w, sem):
             logger.warning("watch #%s error: %s", wid, compact_text(str(e), 200))
 
 
+def _is_working_hours():
+    """Проверяет что текущее время в диапазоне 9:00-21:00 по Минску (UTC+3)."""
+    minsk_hour = (utcnow().hour + 3) % 24
+    return 9 <= minsk_hour < 21
+
+
 async def job_check_watches(context: ContextTypes.DEFAULT_TYPE):
+    if not _is_working_hours():
+        logger.debug("Outside working hours (9:00-21:00 Minsk), skipping check.")
+        return
+
     app = context.application
     repo = app.bot_data["repo"]
 
@@ -975,6 +1019,8 @@ def build_app():
     )
 
     proxy_url = read_env_str("PROXY_URL", "")
+    cf_worker_url = read_env_str("CF_WORKER_URL", "")
+    cf_worker_key = read_env_str("CF_WORKER_KEY", "")
 
     repo = SqliteRepo(db_path)
 
@@ -1026,6 +1072,8 @@ def build_app():
     app.bot_data["max_concurrency"] = max_concurrency
     app.bot_data["verify_ssl"] = verify_ssl
     app.bot_data["proxy_url"] = proxy_url or None
+    app.bot_data["cf_worker_url"] = cf_worker_url or None
+    app.bot_data["cf_worker_key"] = cf_worker_key or None
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("my", cmd_my))
